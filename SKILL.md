@@ -2,7 +2,7 @@
 name: lobster-jobs
 description: Transform Moltbot cron jobs into Lobster workflows. Analyze, inspect, and validate job migrations. Use when converting automations to deterministic, approval-gated workflows with resume capabilities.
 metadata:
-  clawdbot:
+  moltbot:
     emoji: 🦞
     requires:
       bins: ["moltbot", "python3"]
