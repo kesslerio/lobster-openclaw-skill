@@ -56,17 +56,40 @@ Checks:
 - Approval gate syntax
 - Condition syntax
 
-### Tier 2 (Coming Soon)
+### Tier 2 (Available Now)
 
 #### `lobster-jobs convert <job-id>`
 Transform a cron job into a Lobster workflow.
 
-- Generates `.lobster` workflow file
-- Updates cron job to call Lobster
-- Preserves original as backup
+```bash
+lobster-jobs convert 17fe68ca
+lobster-jobs convert 17fe68ca --output-dir ~/workflows
+lobster-jobs convert 17fe68ca --force  # Overwrite existing
+```
+
+Generates:
+- `.lobster` workflow file in `~/.lobster/workflows/`
+- Extracts commands from systemEvent or agentTurn payloads
+- Auto-validates generated workflow
+
+Options:
+- `--output-dir, -o`: Custom output directory
+- `--force, -f`: Overwrite existing workflow
+- `--keep-on-error`: Keep file even if validation fails
 
 #### `lobster-jobs new <name>`
-Create a new Lobster workflow from scratch using interactive wizard.
+Create a new Lobster workflow from scratch using templates.
+
+```bash
+lobster-jobs new my-workflow
+lobster-jobs new my-workflow --template with-approval
+lobster-jobs new my-workflow --template stateful
+```
+
+Templates:
+- `simple-shell`: Basic command execution
+- `with-approval`: Approval gate workflow
+- `stateful`: Workflow with cursor/state tracking
 
 ## Installation
 
@@ -86,6 +109,12 @@ lobster-jobs list
 
 # Inspect a specific job
 lobster-jobs inspect 17fe68ca
+
+# Convert a job to Lobster workflow
+lobster-jobs convert 17fe68ca
+
+# Create a new workflow from template
+lobster-jobs new my-workflow --template with-approval
 
 # Validate a workflow file
 lobster-jobs validate ~/.lobster/workflows/my-workflow.lobster
