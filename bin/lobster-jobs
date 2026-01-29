@@ -23,6 +23,49 @@ PAYLOAD_SYSTEM_EVENT = "systemEvent"
 PAYLOAD_AGENT_TURN = "agentTurn"
 MIN_JOB_ID_PREFIX_LENGTH = 4
 SUBPROCESS_TIMEOUT_SECONDS = 30
+USE_EMOJI = True
+
+EMOJI = {
+    "status_full": "✅",
+    "status_partial": "🟡",
+    "status_none": "❌",
+    "lobster": "🦞",
+    "enabled": "🟢",
+    "disabled": "⚪",
+    "summary": "📊",
+    "tip": "💡",
+    "inspect": "🔍",
+    "details": "📋",
+    "recommend": "💡",
+    "warn": "⚠️",
+    "next": "📋",
+    "ok": "✅",
+    "error": "❌",
+}
+
+EMOJI_TEXT = {
+    "status_full": "[OK]",
+    "status_partial": "[PARTIAL]",
+    "status_none": "[FAIL]",
+    "lobster": "[LOBSTER]",
+    "enabled": "[ON]",
+    "disabled": "[OFF]",
+    "summary": "[STATS]",
+    "tip": "[TIP]",
+    "inspect": "[INSPECT]",
+    "details": "[DETAILS]",
+    "recommend": "[RECOMMEND]",
+    "warn": "[WARN]",
+    "next": "[NEXT]",
+    "ok": "[OK]",
+    "error": "[ERROR]",
+}
+
+
+def emoji(key: str) -> str:
+    """Return emoji or plain-text alternative based on global flag."""
+    table = EMOJI if USE_EMOJI else EMOJI_TEXT
+    return table.get(key, "")
 
 
 class MigrationStatus(Enum):
@@ -33,9 +76,9 @@ class MigrationStatus(Enum):
 
     def emoji(self) -> str:
         return {
-            MigrationStatus.FULLY_MIGRATABLE: "✅",
-            MigrationStatus.PARTIAL: "🟡",
-            MigrationStatus.NOT_MIGRATABLE: "❌",
+            MigrationStatus.FULLY_MIGRATABLE: emoji("status_full"),
+            MigrationStatus.PARTIAL: emoji("status_partial"),
+            MigrationStatus.NOT_MIGRATABLE: emoji("status_none"),
         }[self]
 
     def label(self) -> str:
@@ -59,7 +102,8 @@ class CronJob:
 
     @property
     def kind(self) -> str:
-        return self.payload.get("kind", "unknown")
+        value = self.payload.get("kind", "unknown")
+        return value if isinstance(value, str) else "unknown"
 
     @property
     def schedule_str(self) -> str:
@@ -134,11 +178,14 @@ def fetch_cron_jobs() -> list[CronJob]:
         
         # Parse JSON (handle plugin output before JSON)
         output = result.stdout
-        if "{" in output:
-            json_start = output.index("{")
-            output = output[json_start:]
-        
-        data = json.loads(output)
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            # Look for the start of the JSON object (first '{')
+            json_start = output.find('{')
+            if json_start == -1:
+                raise
+            data = json.loads(output[json_start:])
         jobs = data.get("jobs", [])
         
         cron_jobs = []
@@ -157,14 +204,14 @@ def fetch_cron_jobs() -> list[CronJob]:
         return cron_jobs
     
     except subprocess.TimeoutExpired:
-        print(f"❌ Timeout fetching cron jobs after {SUBPROCESS_TIMEOUT_SECONDS}s", file=sys.stderr)
+        print(f"{emoji('error')} Timeout fetching cron jobs after {SUBPROCESS_TIMEOUT_SECONDS}s", file=sys.stderr)
         sys.exit(1)
     except subprocess.CalledProcessError as e:
-        print(f"❌ Error fetching cron jobs: {e}", file=sys.stderr)
+        print(f"{emoji('error')} Error fetching cron jobs: {e}", file=sys.stderr)
         print(f"stderr: {e.stderr}", file=sys.stderr)
         sys.exit(1)
     except json.JSONDecodeError as e:
-        print(f"❌ Error parsing JSON: {e}", file=sys.stderr)
+        print(f"{emoji('error')} Error parsing JSON: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -188,7 +235,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     
     # Print summary
     total = len(jobs)
-    print(f"\n🦞 Lobster Migration Report")
+    print(f"\n{emoji('lobster')} Lobster Migration Report")
     print(f"   {total} cron job{'s' if total != 1 else ''} found\n")
     
     # Print by category
@@ -198,7 +245,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             print(f"{status.emoji()} {status.label()} ({len(jobs_in_cat)})")
             print("-" * 60)
             for job in jobs_in_cat:
-                enabled = "🟢" if job.enabled else "⚪"
+                enabled = emoji("enabled") if job.enabled else emoji("disabled")
                 print(f"  {enabled} {job.name}")
                 print(f"     ID: {job.id[:8]}... | Schedule: {job.schedule_str}")
                 print(f"     └─ {job.reason}")
@@ -209,8 +256,8 @@ def cmd_list(args: argparse.Namespace) -> int:
     partial = len(by_status[MigrationStatus.PARTIAL])
     not_mig = len(by_status[MigrationStatus.NOT_MIGRATABLE])
     
-    print(f"📊 Summary: {full} fully migratable, {partial} partial, {not_mig} not migratable")
-    print(f"\n💡 Tip: Run 'lobster-jobs inspect <job-id>' for detailed analysis\n")
+    print(f"{emoji('summary')} Summary: {full} fully migratable, {partial} partial, {not_mig} not migratable")
+    print(f"\n{emoji('tip')} Tip: Run 'lobster-jobs inspect <job-id>' for detailed analysis\n")
     
     return 0
 
@@ -224,12 +271,12 @@ def find_job_by_id(jobs: list[CronJob], job_id: str) -> Optional[CronJob]:
     
     # Prefix match
     if len(job_id) < MIN_JOB_ID_PREFIX_LENGTH:
-        print(f"⚠️  Job ID prefix '{job_id}' is too short (min {MIN_JOB_ID_PREFIX_LENGTH} chars)", file=sys.stderr)
+        print(f"{emoji('warn')}  Job ID prefix '{job_id}' is too short (min {MIN_JOB_ID_PREFIX_LENGTH} chars)", file=sys.stderr)
         return None
     
     prefix_matches = [j for j in jobs if j.id.startswith(job_id)]
     if len(prefix_matches) > 1:
-        print(f"❌ Multiple jobs match prefix '{job_id}':", file=sys.stderr)
+        print(f"{emoji('error')} Multiple jobs match prefix '{job_id}':", file=sys.stderr)
         for j in prefix_matches[:5]:
             print(f"   - {j.name} ({j.id[:16]}...)", file=sys.stderr)
         return None
@@ -247,27 +294,27 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     job = find_job_by_id(jobs, job_id)
     
     if not job:
-        print(f"❌ Job not found: {job_id}", file=sys.stderr)
+        print(f"{emoji('error')} Job not found: {job_id}", file=sys.stderr)
         print(f"   Run 'lobster-jobs list' to see available jobs", file=sys.stderr)
         return 1
     
-    print(f"\n🔍 Job Inspection: {job.name}")
+    print(f"\n{emoji('inspect')} Job Inspection: {job.name}")
     print("=" * 60)
     print(f"  ID:        {job.id}")
-    print(f"  Status:    {'🟢 Enabled' if job.enabled else '⚪ Disabled'}")
+    print(f"  Status:    {emoji('enabled')} Enabled" if job.enabled else f"  Status:    {emoji('disabled')} Disabled")
     print(f"  Schedule:  {job.schedule_str}")
     print(f"  Target:    {job.payload.get('sessionTarget', 'unknown')}")
     print(f"  Payload:   {job.kind}")
     print()
     
-    print(f"🦞 Lobster Migration Assessment")
+    print(f"{emoji('lobster')} Lobster Migration Assessment")
     print("-" * 60)
     print(f"  Status:   {job.status.emoji()} {job.status.label()}")
     print(f"  Reason:   {job.reason}")
     print()
     
     # Show payload details
-    print(f"📋 Payload Details")
+    print(f"{emoji('details')} Payload Details")
     print("-" * 60)
     if job.kind == "systemEvent":
         text = job.payload.get("text", "")
@@ -286,17 +333,17 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     print()
     
     # Migration recommendation
-    print(f"💡 Recommendation")
+    print(f"{emoji('recommend')} Recommendation")
     print("-" * 60)
     if job.status == MigrationStatus.FULLY_MIGRATABLE:
-        print("  ✅ Ready to migrate with 'lobster-jobs convert'")
+        print(f"  {emoji('ok')} Ready to migrate with 'lobster-jobs convert'")
         print("  └─ This job can be fully converted to a deterministic Lobster workflow")
     elif job.status == MigrationStatus.PARTIAL:
-        print("  🟡 Can be partially migrated")
+        print(f"  {emoji('status_partial')} Can be partially migrated")
         print("  └─ Extract deterministic steps to Lobster, keep LLM steps in wrapper")
         print("  └─ Consider using 'clawd.invoke' for LLM judgment within workflow")
     else:
-        print("  ❌ Not recommended for migration")
+        print(f"  {emoji('status_none')} Not recommended for migration")
         print("  └─ Keep as agentTurn - heavy LLM reasoning required")
     
     print()
@@ -315,7 +362,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     
     # Check if file already exists
     if workflow_path.exists() and not args.force:
-        print(f"❌ Workflow already exists: {workflow_path}", file=sys.stderr)
+        print(f"{emoji('error')} Workflow already exists: {workflow_path}", file=sys.stderr)
         print(f"   Use --force to overwrite", file=sys.stderr)
         return 1
     
@@ -382,21 +429,21 @@ steps:
     try:
         with open(workflow_path, 'w') as f:
             f.write(workflow_content)
-        print(f"✅ Created workflow: {workflow_path}")
+        print(f"{emoji('ok')} Created workflow: {workflow_path}")
     except IOError as e:
-        print(f"❌ Error writing workflow: {e}", file=sys.stderr)
+        print(f"{emoji('error')} Error writing workflow: {e}", file=sys.stderr)
         return 1
     
     # Validate the generated workflow
-    print(f"\n🔍 Validating generated workflow...")
+    print(f"\n{emoji('inspect')} Validating generated workflow...")
     args.workflow_file = str(workflow_path)
     validate_result = cmd_validate(args)
     
     if validate_result != 0:
-        print(f"⚠️  Generated workflow has validation issues", file=sys.stderr)
+        print(f"{emoji('warn')}  Generated workflow has validation issues", file=sys.stderr)
         return 1
     
-    print(f"\n💡 Next steps:")
+    print(f"\n{emoji('tip')} Next steps:")
     print(f"   Edit: {workflow_path}")
     print(f"   Test: lobster run {workflow_path}")
     print()
@@ -406,16 +453,21 @@ steps:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     """Validate a Lobster workflow file."""
-    workflow_path = Path(args.workflow_file)
+    workflow_arg = args.workflow_file
+    if ".." in Path(workflow_arg).parts:
+        print(f"{emoji('error')} Path traversal is not allowed: {workflow_arg}", file=sys.stderr)
+        return 1
+    
+    workflow_path = Path(workflow_arg)
     
     if not workflow_path.exists():
-        print(f"❌ File not found: {workflow_path}", file=sys.stderr)
+        print(f"{emoji('error')} File not found: {workflow_path}", file=sys.stderr)
         return 1
     
     try:
         import yaml
     except ImportError:
-        print("❌ Missing dependency: PyYAML is required for validation", file=sys.stderr)
+        print(f"{emoji('error')} Missing dependency: PyYAML is required for validation", file=sys.stderr)
         print("   Install with: pip install pyyaml", file=sys.stderr)
         return 2  # Exit code 2 for missing dependency
     
@@ -423,17 +475,17 @@ def cmd_validate(args: argparse.Namespace) -> int:
         with open(workflow_path, 'r') as f:
             content = f.read()
     except IOError as e:
-        print(f"❌ Error reading file: {e}", file=sys.stderr)
+        print(f"{emoji('error')} Error reading file: {e}", file=sys.stderr)
         return 1
     
-    print(f"\n🔍 Validating: {workflow_path}")
+    print(f"\n{emoji('inspect')} Validating: {workflow_path}")
     print("-" * 60)
     
     # Parse YAML
     try:
         workflow = yaml.safe_load(content)
     except yaml.YAMLError as e:
-        print(f"❌ YAML parse error: {e}", file=sys.stderr)
+        print(f"{emoji('error')} YAML parse error: {e}", file=sys.stderr)
         return 1
     
     errors = []
@@ -468,17 +520,17 @@ def cmd_validate(args: argparse.Namespace) -> int:
     
     # Report results
     if errors:
-        print(f"❌ Validation failed ({len(errors)} errors):")
+        print(f"{emoji('error')} Validation failed ({len(errors)} errors):")
         for err in errors:
             print(f"   • {err}")
     
     if warnings:
-        print(f"⚠️  Warnings ({len(warnings)}):")
+        print(f"{emoji('warn')}  Warnings ({len(warnings)}):")
         for warn in warnings:
             print(f"   • {warn}")
     
     if not errors and not warnings:
-        print(f"✅ Valid Lobster workflow")
+        print(f"{emoji('ok')} Valid Lobster workflow")
         print(f"   Name: {workflow.get('name')}")
         print(f"   Steps: {len(steps)}")
         print(f"   Description: {workflow.get('description', 'N/A')[:60]}")
@@ -627,13 +679,13 @@ def cmd_convert(args: argparse.Namespace) -> int:
     job = find_job_by_id(jobs, job_id)
     
     if not job:
-        print(f"❌ Job not found: {job_id}", file=sys.stderr)
+        print(f"{emoji('error')} Job not found: {job_id}", file=sys.stderr)
         print(f"   Run 'lobster-jobs list' to see available jobs", file=sys.stderr)
         return 1
     
     # Check if migration is recommended
     if job.status == MigrationStatus.NOT_MIGRATABLE and not args.force:
-        print(f"❌ Job is marked as NOT_MIGRATABLE: {job.name}", file=sys.stderr)
+        print(f"{emoji('error')} Job is marked as NOT_MIGRATABLE: {job.name}", file=sys.stderr)
         print(f"   Reason: {job.reason}", file=sys.stderr)
         print(f"   Use --force to override", file=sys.stderr)
         return 1
@@ -647,7 +699,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
     
     # Check if file already exists
     if workflow_path.exists() and not args.force:
-        print(f"❌ Workflow already exists: {workflow_path}", file=sys.stderr)
+        print(f"{emoji('error')} Workflow already exists: {workflow_path}", file=sys.stderr)
         print(f"   Use --force to overwrite", file=sys.stderr)
         return 1
     
@@ -671,7 +723,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
             fd = None  # Mark as closed
             # Atomic rename
             os.replace(temp_path, workflow_path)
-            print(f"✅ Created workflow: {workflow_path}")
+            print(f"{emoji('ok')} Created workflow: {workflow_path}")
         except Exception:
             # Clean up temp file on error
             if fd is not None:
@@ -686,23 +738,23 @@ def cmd_convert(args: argparse.Namespace) -> int:
                     pass
             raise
     except IOError as e:
-        print(f"❌ Error writing workflow: {e}", file=sys.stderr)
+        print(f"{emoji('error')} Error writing workflow: {e}", file=sys.stderr)
         return 1
     
     # Validate the generated workflow
-    print(f"\n🔍 Validating generated workflow...")
+    print(f"\n{emoji('inspect')} Validating generated workflow...")
     args.workflow_file = str(workflow_path)
     validate_result = cmd_validate(args)
     
     if validate_result != 0:
-        print(f"⚠️  Generated workflow has validation issues", file=sys.stderr)
+        print(f"{emoji('warn')}  Generated workflow has validation issues", file=sys.stderr)
         if not args.keep_on_error:
             workflow_path.unlink()
             print(f"   Deleted: {workflow_path}", file=sys.stderr)
         return 1
     
     # Print next steps
-    print(f"\n📋 Next Steps")
+    print(f"\n{emoji('next')} Next Steps")
     print("-" * 60)
     print(f"1. Review the workflow: cat {workflow_path}")
     print(f"2. Test manually: lobster run {workflow_path}")
@@ -722,6 +774,7 @@ def main() -> int:
         prog="lobster-jobs",
         description="Transform and manage Lobster workflows for Moltbot cron jobs",
     )
+    parser.add_argument("--no-emoji", action="store_true", help="Disable emoji in output")
     
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     
@@ -758,6 +811,8 @@ def main() -> int:
     new_parser.set_defaults(func=cmd_new)
     
     args = parser.parse_args()
+    global USE_EMOJI
+    USE_EMOJI = not args.no_emoji
     
     if not args.command:
         parser.print_help()
