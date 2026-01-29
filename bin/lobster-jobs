@@ -7,13 +7,23 @@ Tier 1 commands: list, inspect, validate
 
 import argparse
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Union
+
+
+# Constants
+PAYLOAD_SYSTEM_EVENT = "systemEvent"
+PAYLOAD_AGENT_TURN = "agentTurn"
+MIN_JOB_ID_PREFIX_LENGTH = 4
+SUBPROCESS_TIMEOUT_SECONDS = 30
 
 
 class MigrationStatus(Enum):
@@ -67,19 +77,19 @@ class CronJob:
         return "unknown"
 
 
-def categorize_job(job: dict) -> tuple[MigrationStatus, str]:
+def categorize_job(job: dict) -> Tuple[MigrationStatus, str]:
     """Categorize a cron job by Lobster migratability."""
     payload = job.get("payload", {})
     kind = payload.get("kind", "unknown")
     
-    if kind == "systemEvent":
+    if kind == PAYLOAD_SYSTEM_EVENT:
         text = payload.get("text", "")
         # Check if it's a simple shell command
         if re.match(r'^(exec|bash|sh|python|python3|node|npm|pnpm)\s', text.strip()):
             return MigrationStatus.FULLY_MIGRATABLE, "Simple shell command - fully deterministic"
         return MigrationStatus.PARTIAL, "systemEvent but complex command structure"
     
-    if kind == "agentTurn":
+    if kind == PAYLOAD_AGENT_TURN:
         message = payload.get("message", "")
         
         # Check for clear exec steps
@@ -119,6 +129,7 @@ def fetch_cron_jobs() -> list[CronJob]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
         
         # Parse JSON (handle plugin output before JSON)
@@ -145,6 +156,9 @@ def fetch_cron_jobs() -> list[CronJob]:
         
         return cron_jobs
     
+    except subprocess.TimeoutExpired:
+        print(f"❌ Timeout fetching cron jobs after {SUBPROCESS_TIMEOUT_SECONDS}s", file=sys.stderr)
+        sys.exit(1)
     except subprocess.CalledProcessError as e:
         print(f"❌ Error fetching cron jobs: {e}", file=sys.stderr)
         print(f"stderr: {e.stderr}", file=sys.stderr)
@@ -201,12 +215,36 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def find_job_by_id(jobs: list[CronJob], job_id: str) -> Optional[CronJob]:
+    """Find a job by ID or prefix. Warns if multiple jobs match."""
+    # Exact match first
+    exact_match = next((j for j in jobs if j.id == job_id), None)
+    if exact_match:
+        return exact_match
+    
+    # Prefix match
+    if len(job_id) < MIN_JOB_ID_PREFIX_LENGTH:
+        print(f"⚠️  Job ID prefix '{job_id}' is too short (min {MIN_JOB_ID_PREFIX_LENGTH} chars)", file=sys.stderr)
+        return None
+    
+    prefix_matches = [j for j in jobs if j.id.startswith(job_id)]
+    if len(prefix_matches) > 1:
+        print(f"❌ Multiple jobs match prefix '{job_id}':", file=sys.stderr)
+        for j in prefix_matches[:5]:
+            print(f"   - {j.name} ({j.id[:16]}...)", file=sys.stderr)
+        return None
+    elif len(prefix_matches) == 1:
+        return prefix_matches[0]
+    
+    return None
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Inspect a specific cron job."""
     job_id = args.job_id
     jobs = fetch_cron_jobs()
     
-    job = next((j for j in jobs if j.id.startswith(job_id) or j.id == job_id), None)
+    job = find_job_by_id(jobs, job_id)
     
     if not job:
         print(f"❌ Job not found: {job_id}", file=sys.stderr)
@@ -377,8 +415,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     try:
         import yaml
     except ImportError:
-        print("❌ PyYAML required for validation: pip install pyyaml", file=sys.stderr)
-        return 1
+        print("❌ Missing dependency: PyYAML is required for validation", file=sys.stderr)
+        print("   Install with: pip install pyyaml", file=sys.stderr)
+        return 2  # Exit code 2 for missing dependency
     
     try:
         with open(workflow_path, 'r') as f:
@@ -448,21 +487,39 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
+def sanitize_workflow_name(name: str) -> str:
+    """Sanitize job name for use as workflow name."""
+    # Replace unsafe characters
+    sanitized = name.lower()
+    for char in [" ", "_", "(", ")", "/", "\\", "<", ">", ":", '"', "|", "?", "*"]:
+        sanitized = sanitized.replace(char, "-")
+    # Remove consecutive dashes
+    while "--" in sanitized:
+        sanitized = sanitized.replace("--", "-")
+    # Remove leading/trailing dashes
+    sanitized = sanitized.strip("-")
+    return sanitized or "workflow"
+
+
 def generate_workflow(job: CronJob) -> str:
     """Generate a Lobster workflow YAML from a cron job."""
     payload = job.payload
     kind = payload.get("kind", "unknown")
     
-    workflow_name = job.name.lower().replace(" ", "-").replace("(", "").replace(")", "").replace("/", "-")
+    workflow_name = sanitize_workflow_name(job.name)
     
     steps = []
     
-    if kind == "systemEvent":
+    if kind == PAYLOAD_SYSTEM_EVENT:
         text = payload.get("text", "").strip()
         # Extract the actual command
         cmd = text
         if cmd.startswith("exec "):
             cmd = cmd[5:]
+        
+        # Validate command doesn't contain dangerous characters
+        if any(c in cmd for c in ['\n', '\r', '\x00']):
+            cmd = cmd.split('\n')[0].strip()
         
         steps.append({
             "id": "execute",
@@ -479,7 +536,7 @@ def generate_workflow(job: CronJob) -> str:
                 "approval": "optional"
             })
     
-    elif kind == "agentTurn":
+    elif kind == PAYLOAD_AGENT_TURN:
         message = payload.get("message", "")
         
         # Try to extract exec commands from the message
@@ -496,6 +553,9 @@ def generate_workflow(job: CronJob) -> str:
         if extracted_commands:
             for i, cmd in enumerate(extracted_commands):
                 cmd = cmd.strip()
+                # Sanitize extracted command
+                if any(c in cmd for c in ['\n', '\r', '\x00']):
+                    cmd = cmd.split('\n')[0].strip()
                 if cmd:
                     steps.append({
                         "id": f"step_{i+1}",
@@ -517,16 +577,28 @@ def generate_workflow(job: CronJob) -> str:
         "steps": steps
     }
     
-    # Convert to YAML
+    # Convert to YAML using safe dump
     try:
         import yaml
-        return yaml.dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        # Use safe_dump to prevent arbitrary object serialization
+        return yaml.safe_dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
     except ImportError:
-        # Fallback to manual YAML generation
+        # Fallback to manual YAML generation with proper escaping
         yaml_lines = [f"name: {workflow_name}", f"description: Migrated from cron job: {job.name}", "steps:"]
         for step in steps:
             yaml_lines.append(f"  - id: {step['id']}")
-            yaml_lines.append(f"    command: \"{step['command']}\"")
+            # Properly escape the command for YAML
+            cmd = step['command']
+            if '"' in cmd or ':' in cmd or cmd.startswith(' ') or cmd.endswith(' '):
+                # Use single quotes if no single quotes in command
+                if "'" not in cmd:
+                    yaml_lines.append(f"    command: '{cmd}'")
+                else:
+                    # Use double quotes and escape
+                    cmd_escaped = cmd.replace('\\', '\\\\').replace('"', '\\"')
+                    yaml_lines.append(f'    command: "{cmd_escaped}"')
+            else:
+                yaml_lines.append(f"    command: {cmd}")
             if "capture" in step:
                 yaml_lines.append(f"    capture: {step['capture']}")
             if "condition" in step:
@@ -541,7 +613,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
     job_id = args.job_id
     jobs = fetch_cron_jobs()
     
-    job = next((j for j in jobs if j.id.startswith(job_id) or j.id == job_id), None)
+    job = find_job_by_id(jobs, job_id)
     
     if not job:
         print(f"❌ Job not found: {job_id}", file=sys.stderr)
@@ -559,7 +631,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
     workflow_dir = Path(args.output_dir or "~/.lobster/workflows").expanduser()
     workflow_dir.mkdir(parents=True, exist_ok=True)
     
-    workflow_name = job.name.lower().replace(" ", "-").replace("(", "").replace(")", "").replace("/", "-")
+    workflow_name = sanitize_workflow_name(job.name)
     workflow_path = workflow_dir / f"{workflow_name}.lobster"
     
     # Check if file already exists
@@ -571,11 +643,28 @@ def cmd_convert(args: argparse.Namespace) -> int:
     # Generate workflow
     workflow_yaml = generate_workflow(job)
     
-    # Write workflow file
+    # Write workflow file atomically using temp file + rename
+    temp_path = None
     try:
-        with open(workflow_path, 'w') as f:
-            f.write(workflow_yaml)
-        print(f"✅ Created workflow: {workflow_path}")
+        # Create temp file in same directory for atomic move
+        fd, temp_path = tempfile.mkstemp(
+            dir=workflow_dir,
+            prefix=f".{workflow_name}.tmp-",
+            suffix=".lobster"
+        )
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(workflow_yaml)
+            # Atomic rename
+            os.replace(temp_path, workflow_path)
+            print(f"✅ Created workflow: {workflow_path}")
+        except:
+            # Clean up temp file on error
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            raise
     except IOError as e:
         print(f"❌ Error writing workflow: {e}", file=sys.stderr)
         return 1
