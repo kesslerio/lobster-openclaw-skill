@@ -9,14 +9,13 @@ import argparse
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple
 
 
 # Constants
@@ -53,8 +52,8 @@ class CronJob:
     id: str
     name: str
     enabled: bool
-    schedule: dict
-    payload: dict
+    schedule: dict[str, Any]
+    payload: dict[str, Any]
     status: MigrationStatus
     reason: str
 
@@ -130,6 +129,7 @@ def fetch_cron_jobs() -> list[CronJob]:
             text=True,
             check=True,
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            shell=False,
         )
         
         # Parse JSON (handle plugin output before JSON)
@@ -281,7 +281,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         for line in lines:
             print(f"    {line[:70]}{'...' if len(line) > 70 else ''}")
         if len(message.split('\n')) > 5:
-            print(f"    ... ({len(message.split(chr(10))) - 5} more lines)")
+            print(f"    ... ({len(message.split('\n')) - 5} more lines)")
     
     print()
     
@@ -571,6 +571,16 @@ def generate_workflow(job: CronJob) -> str:
                 "comment": "Extract commands from original agentTurn message"
             })
     
+    # Add warning for agentTurn workflows with extracted commands
+    warning_comment = ""
+    if kind == PAYLOAD_AGENT_TURN and extracted_commands:
+        warning_comment = f"""# WARNING: This workflow was auto-generated from an agentTurn job.
+# Commands were extracted using regex patterns and may require manual review.
+# Original job: {job.name}
+# Please verify all extracted commands before running in production.
+
+"""
+    
     workflow = {
         "name": workflow_name,
         "description": f"Migrated from cron job: {job.name}",
@@ -581,7 +591,8 @@ def generate_workflow(job: CronJob) -> str:
     try:
         import yaml
         # Use safe_dump to prevent arbitrary object serialization
-        return yaml.safe_dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        yaml_output = yaml.safe_dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        return warning_comment + yaml_output
     except ImportError:
         # Fallback to manual YAML generation with proper escaping
         yaml_lines = [f"name: {workflow_name}", f"description: Migrated from cron job: {job.name}", "steps:"]
@@ -645,6 +656,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
     
     # Write workflow file atomically using temp file + rename
     temp_path = None
+    fd = None
     try:
         # Create temp file in same directory for atomic move
         fd, temp_path = tempfile.mkstemp(
@@ -653,17 +665,25 @@ def cmd_convert(args: argparse.Namespace) -> int:
             suffix=".lobster"
         )
         try:
-            with os.fdopen(fd, 'w') as f:
-                f.write(workflow_yaml)
+            # Write using os.write to avoid fdopen issues, then close explicitly
+            os.write(fd, workflow_yaml.encode('utf-8'))
+            os.close(fd)
+            fd = None  # Mark as closed
             # Atomic rename
             os.replace(temp_path, workflow_path)
             print(f"✅ Created workflow: {workflow_path}")
-        except:
+        except Exception:
             # Clean up temp file on error
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
             raise
     except IOError as e:
         print(f"❌ Error writing workflow: {e}", file=sys.stderr)
