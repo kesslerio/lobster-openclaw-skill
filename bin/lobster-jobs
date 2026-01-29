@@ -347,6 +347,165 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
+def generate_workflow(job: CronJob) -> str:
+    """Generate a Lobster workflow YAML from a cron job."""
+    payload = job.payload
+    kind = payload.get("kind", "unknown")
+    
+    workflow_name = job.name.lower().replace(" ", "-").replace("(", "").replace(")", "").replace("/", "-")
+    
+    steps = []
+    
+    if kind == "systemEvent":
+        text = payload.get("text", "").strip()
+        # Extract the actual command
+        cmd = text
+        if cmd.startswith("exec "):
+            cmd = cmd[5:]
+        
+        steps.append({
+            "id": "execute",
+            "command": cmd,
+            "capture": "output"
+        })
+        
+        # Add notification step if it looks like it produces output
+        if any(word in cmd.lower() for word in ["alert", "notify", "send", "report"]):
+            steps.append({
+                "id": "notify",
+                "command": "echo \"$execute.output\"",
+                "condition": "len($execute.output) > 0",
+                "approval": "optional"
+            })
+    
+    elif kind == "agentTurn":
+        message = payload.get("message", "")
+        
+        # Try to extract exec commands from the message
+        exec_patterns = [
+            r'(?:Run|Execute):?\s*[`\']?([^`\'\n]+)',
+            r'(?:^|\n)(?:\d+\.\s*)?(?:bash|python|python3|node|npm|pnpm)\s+([^\n]+)',
+        ]
+        
+        extracted_commands = []
+        for pattern in exec_patterns:
+            matches = re.findall(pattern, message, re.MULTILINE | re.IGNORECASE)
+            extracted_commands.extend(matches)
+        
+        if extracted_commands:
+            for i, cmd in enumerate(extracted_commands):
+                cmd = cmd.strip()
+                if cmd:
+                    steps.append({
+                        "id": f"step_{i+1}",
+                        "command": cmd,
+                        "capture": "output"
+                    })
+        
+        # If no commands extracted, add a placeholder
+        if not steps:
+            steps.append({
+                "id": "placeholder",
+                "command": "echo 'Replace with actual command'",
+                "comment": "Extract commands from original agentTurn message"
+            })
+    
+    workflow = {
+        "name": workflow_name,
+        "description": f"Migrated from cron job: {job.name}",
+        "steps": steps
+    }
+    
+    # Convert to YAML
+    try:
+        import yaml
+        return yaml.dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    except ImportError:
+        # Fallback to manual YAML generation
+        yaml_lines = [f"name: {workflow_name}", f"description: Migrated from cron job: {job.name}", "steps:"]
+        for step in steps:
+            yaml_lines.append(f"  - id: {step['id']}")
+            yaml_lines.append(f"    command: \"{step['command']}\"")
+            if "capture" in step:
+                yaml_lines.append(f"    capture: {step['capture']}")
+            if "condition" in step:
+                yaml_lines.append(f"    condition: {step['condition']}")
+            if "approval" in step:
+                yaml_lines.append(f"    approval: {step['approval']}")
+        return "\n".join(yaml_lines)
+
+
+def cmd_convert(args: argparse.Namespace) -> int:
+    """Convert a cron job to a Lobster workflow."""
+    job_id = args.job_id
+    jobs = fetch_cron_jobs()
+    
+    job = next((j for j in jobs if j.id.startswith(job_id) or j.id == job_id), None)
+    
+    if not job:
+        print(f"❌ Job not found: {job_id}", file=sys.stderr)
+        print(f"   Run 'lobster-jobs list' to see available jobs", file=sys.stderr)
+        return 1
+    
+    # Check if migration is recommended
+    if job.status == MigrationStatus.NOT_MIGRATABLE and not args.force:
+        print(f"❌ Job is marked as NOT_MIGRATABLE: {job.name}", file=sys.stderr)
+        print(f"   Reason: {job.reason}", file=sys.stderr)
+        print(f"   Use --force to override", file=sys.stderr)
+        return 1
+    
+    # Determine output path
+    workflow_dir = Path(args.output_dir or "~/.lobster/workflows").expanduser()
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    
+    workflow_name = job.name.lower().replace(" ", "-").replace("(", "").replace(")", "").replace("/", "-")
+    workflow_path = workflow_dir / f"{workflow_name}.lobster"
+    
+    # Check if file already exists
+    if workflow_path.exists() and not args.force:
+        print(f"❌ Workflow already exists: {workflow_path}", file=sys.stderr)
+        print(f"   Use --force to overwrite", file=sys.stderr)
+        return 1
+    
+    # Generate workflow
+    workflow_yaml = generate_workflow(job)
+    
+    # Write workflow file
+    try:
+        with open(workflow_path, 'w') as f:
+            f.write(workflow_yaml)
+        print(f"✅ Created workflow: {workflow_path}")
+    except IOError as e:
+        print(f"❌ Error writing workflow: {e}", file=sys.stderr)
+        return 1
+    
+    # Validate the generated workflow
+    print(f"\n🔍 Validating generated workflow...")
+    args.workflow_file = str(workflow_path)
+    validate_result = cmd_validate(args)
+    
+    if validate_result != 0:
+        print(f"⚠️  Generated workflow has validation issues", file=sys.stderr)
+        if not args.keep_on_error:
+            workflow_path.unlink()
+            print(f"   Deleted: {workflow_path}", file=sys.stderr)
+        return 1
+    
+    # Print next steps
+    print(f"\n📋 Next Steps")
+    print("-" * 60)
+    print(f"1. Review the workflow: cat {workflow_path}")
+    print(f"2. Test manually: lobster run {workflow_path}")
+    
+    if args.update_cron:
+        print(f"3. Update cron job to use Lobster (not yet implemented)")
+    else:
+        print(f"3. To update the cron job, run with --update-cron")
+    
+    print()
+    return 0
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -369,6 +528,15 @@ def main() -> int:
     validate_parser = subparsers.add_parser("validate", help="Validate a Lobster workflow file")
     validate_parser.add_argument("workflow_file", help="Path to .lobster workflow file")
     validate_parser.set_defaults(func=cmd_validate)
+    
+    # convert command
+    convert_parser = subparsers.add_parser("convert", help="Convert a cron job to Lobster workflow")
+    convert_parser.add_argument("job_id", help="Job ID (or prefix)")
+    convert_parser.add_argument("--output-dir", "-o", help="Output directory for workflow (default: ~/.lobster/workflows)")
+    convert_parser.add_argument("--force", "-f", action="store_true", help="Overwrite existing workflow")
+    convert_parser.add_argument("--keep-on-error", action="store_true", help="Keep workflow file even if validation fails")
+    convert_parser.add_argument("--update-cron", action="store_true", help="Update cron job to call Lobster (not yet implemented)")
+    convert_parser.set_defaults(func=cmd_convert)
     
     args = parser.parse_args()
     
