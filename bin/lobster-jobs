@@ -265,6 +265,107 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_new(args: argparse.Namespace) -> int:
+    """Create a new Lobster workflow from scratch."""
+    workflow_name = args.name.lower().replace(" ", "-").replace("_", "-")
+    
+    # Determine output path
+    workflow_dir = Path(args.output_dir or "~/.lobster/workflows").expanduser()
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    
+    workflow_path = workflow_dir / f"{workflow_name}.lobster"
+    
+    # Check if file already exists
+    if workflow_path.exists() and not args.force:
+        print(f"❌ Workflow already exists: {workflow_path}", file=sys.stderr)
+        print(f"   Use --force to overwrite", file=sys.stderr)
+        return 1
+    
+    # Load template
+    template_name = args.template
+    template_path = Path(__file__).parent.parent / "templates" / f"{template_name}.lobster"
+    
+    if not template_path.exists():
+        # Create inline templates
+        templates = {
+            "simple-shell": """name: {name}
+description: A simple shell command workflow
+
+steps:
+  - id: execute
+    command: echo "Replace with your command"
+    capture: output
+    
+  - id: result
+    command: echo "Result: $execute.output"
+""",
+            "with-approval": """name: {name}
+description: Workflow with approval gate
+
+steps:
+  - id: prepare
+    command: echo "Preparing..."
+    capture: output
+    
+  - id: confirm
+    command: approve --prompt "Proceed with action?"
+    approval: required
+    
+  - id: execute
+    command: echo "Executing..."
+    condition: $confirm.approved
+""",
+            "stateful": """name: {name}
+description: Stateful workflow with cursor tracking
+
+steps:
+  - id: load_state
+    command: cat ~/.lobster/state/{name}.json 2>/dev/null || echo '{}'
+    capture: state
+    
+  - id: process
+    command: echo "Processing..."
+    capture: output
+    
+  - id: save_state
+    command: echo '{{"cursor": "'$process.output'"}}' > ~/.lobster/state/{name}.json
+"""
+        }
+        
+        workflow_content = templates.get(template_name, templates["simple-shell"]).format(name=workflow_name)
+    else:
+        with open(template_path, 'r') as f:
+            template_content = f.read()
+        # Replace placeholders
+        workflow_content = template_content.replace("name: example-", f"name: {workflow_name}")
+        workflow_content = workflow_content.replace("example workflow", f"{workflow_name} workflow")
+    
+    # Write workflow file
+    try:
+        with open(workflow_path, 'w') as f:
+            f.write(workflow_content)
+        print(f"✅ Created workflow: {workflow_path}")
+    except IOError as e:
+        print(f"❌ Error writing workflow: {e}", file=sys.stderr)
+        return 1
+    
+    # Validate the generated workflow
+    print(f"\n🔍 Validating generated workflow...")
+    args.workflow_file = str(workflow_path)
+    validate_result = cmd_validate(args)
+    
+    if validate_result != 0:
+        print(f"⚠️  Generated workflow has validation issues", file=sys.stderr)
+        return 1
+    
+    print(f"\n💡 Next steps:")
+    print(f"   Edit: {workflow_path}")
+    print(f"   Test: lobster run {workflow_path}")
+    print()
+    
+    return 0
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Validate a Lobster workflow file."""
     workflow_path = Path(args.workflow_file)
@@ -537,6 +638,15 @@ def main() -> int:
     convert_parser.add_argument("--keep-on-error", action="store_true", help="Keep workflow file even if validation fails")
     convert_parser.add_argument("--update-cron", action="store_true", help="Update cron job to call Lobster (not yet implemented)")
     convert_parser.set_defaults(func=cmd_convert)
+    
+    # new command
+    new_parser = subparsers.add_parser("new", help="Create a new Lobster workflow from scratch")
+    new_parser.add_argument("name", help="Workflow name (kebab-case recommended)")
+    new_parser.add_argument("--output-dir", "-o", help="Output directory (default: ~/.lobster/workflows)")
+    new_parser.add_argument("--template", "-t", choices=["simple-shell", "with-approval", "stateful"],
+                          default="simple-shell", help="Template to use")
+    new_parser.add_argument("--force", "-f", action="store_true", help="Overwrite existing workflow")
+    new_parser.set_defaults(func=cmd_new)
     
     args = parser.parse_args()
     
