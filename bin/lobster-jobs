@@ -43,29 +43,16 @@ EMOJI = {
     "error": "❌",
 }
 
-EMOJI_TEXT = {
-    "status_full": "[OK]",
-    "status_partial": "[PARTIAL]",
-    "status_none": "[FAIL]",
-    "lobster": "[LOBSTER]",
-    "enabled": "[ON]",
-    "disabled": "[OFF]",
-    "summary": "[STATS]",
-    "tip": "[TIP]",
-    "inspect": "[INSPECT]",
-    "details": "[DETAILS]",
-    "recommend": "[RECOMMEND]",
-    "warn": "[WARN]",
-    "next": "[NEXT]",
-    "ok": "[OK]",
-    "error": "[ERROR]",
-}
+# Generate text fallbacks from emoji keys to avoid duplication
+EMOJI_TEXT = {k: f"[{k.upper().replace('_', ' ')}]" for k in EMOJI}
 
 
 def emoji(key: str) -> str:
     """Return emoji or plain-text alternative based on global flag."""
     table = EMOJI if USE_EMOJI else EMOJI_TEXT
-    return table.get(key, "")
+    if key not in table:
+        raise KeyError(f"Unknown emoji key: {key}")
+    return table[key]
 
 
 class MigrationStatus(Enum):
@@ -181,11 +168,23 @@ def fetch_cron_jobs() -> list[CronJob]:
         try:
             data = json.loads(output)
         except json.JSONDecodeError:
-            # Look for the start of the JSON object (first '{')
-            json_start = output.find('{')
-            if json_start == -1:
-                raise
-            data = json.loads(output[json_start:])
+            # Use raw_decode to find JSON start more reliably
+            decoder = json.JSONDecoder()
+            # Search for either object '{' or array '[' start
+            for start_char in ['{', '[']:
+                pos = output.find(start_char)
+                while pos != -1:
+                    try:
+                        data, _ = decoder.raw_decode(output, pos)
+                        break
+                    except json.JSONDecodeError:
+                        # Try next occurrence of start char
+                        pos = output.find(start_char, pos + 1)
+                else:
+                    continue
+                break
+            else:
+                raise json.JSONDecodeError("No valid JSON object or array found", output, 0)
         jobs = data.get("jobs", [])
         
         cron_jobs = []
@@ -454,11 +453,25 @@ steps:
 def cmd_validate(args: argparse.Namespace) -> int:
     """Validate a Lobster workflow file."""
     workflow_arg = args.workflow_file
-    if ".." in Path(workflow_arg).parts:
+    
+    # Resolve path against current directory and verify it's within allowed bounds
+    base_dir = Path.cwd().resolve()
+    workflow_path = Path(workflow_arg).expanduser()
+    
+    # If relative, resolve against base_dir; if absolute, resolve as-is
+    if workflow_path.is_absolute():
+        resolved_path = workflow_path.resolve()
+    else:
+        resolved_path = (base_dir / workflow_path).resolve()
+    
+    # Verify resolved path is within base directory (prevents path traversal)
+    try:
+        resolved_path.relative_to(base_dir)
+    except ValueError:
         print(f"{emoji('error')} Path traversal is not allowed: {workflow_arg}", file=sys.stderr)
         return 1
     
-    workflow_path = Path(workflow_arg)
+    workflow_path = resolved_path
     
     if not workflow_path.exists():
         print(f"{emoji('error')} File not found: {workflow_path}", file=sys.stderr)
