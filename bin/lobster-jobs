@@ -454,14 +454,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
     """Validate a Lobster workflow file."""
     workflow_arg = args.workflow_file
     
-    # Resolve path against current directory and verify it's within allowed bounds
-    base_dir = Path.cwd().resolve()
+    # Resolve path and verify it's within allowed bounds
     workflow_path = Path(workflow_arg).expanduser()
     
-    # If relative, resolve against base_dir; if absolute, resolve as-is
     if workflow_path.is_absolute():
+        # For absolute paths, use parent directory as base
+        base_dir = workflow_path.parent.resolve()
         resolved_path = workflow_path.resolve()
     else:
+        # For relative paths, resolve against cwd
+        base_dir = Path.cwd().resolve()
         resolved_path = (base_dir / workflow_path).resolve()
     
     # Verify resolved path is within base directory (prevents path traversal)

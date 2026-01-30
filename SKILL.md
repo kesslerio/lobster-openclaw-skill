@@ -1,20 +1,20 @@
 ---
 name: lobster-jobs
-description: Transform Moltbot cron jobs into Lobster workflows. Analyze, inspect, and validate job migrations. Use when converting automations to deterministic, approval-gated workflows with resume capabilities.
+description: Transform OpenClaw cron jobs into Lobster workflows. Analyze, inspect, and validate job migrations. Use when converting automations to deterministic, approval-gated workflows with resume capabilities.
 metadata:
-  clawdbot:
+  openclaw:
     emoji: 🦞
     requires:
-      bins: ["moltbot", "python3"]
+      bins: ["openclaw", "python3"]
 ---
 
 # lobster-jobs
 
-Transform Moltbot cron jobs into Lobster workflows with approval gates and resumable execution.
+Transform OpenClaw cron jobs into Lobster workflows with approval gates and resumable execution.
 
 ## Purpose
 
-Moltbot cron jobs are either:
+OpenClaw cron jobs are either:
 - **systemEvent**: Simple shell commands (fully deterministic)
 - **agentTurn**: Natural language instructions spawning AI agents (flexible but token-heavy)
 
@@ -192,5 +192,5 @@ The workflow is deterministic; the LLM is a black-box step.
 
 ## References
 
-- Lobster: https://github.com/moltbot/lobster
-- Lobster VISION: https://github.com/moltbot/lobster/blob/main/VISION.md
+- Lobster: https://github.com/openclaw/lobster
+- Lobster VISION: https://github.com/openclaw/lobster/blob/main/VISION.md
