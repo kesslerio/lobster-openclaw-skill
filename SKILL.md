@@ -120,6 +120,24 @@ lobster-jobs new my-workflow --template with-approval
 lobster-jobs validate ~/.lobster/workflows/my-workflow.lobster
 ```
 
+## Systemd Timer Notes
+
+When Lobster workflows are triggered by systemd user timers, do not rely on interactive shell PATH.
+
+- Use `/run/current-system/sw/bin/env` instead of `/usr/bin/env` in `ExecStart`.
+- Set an explicit PATH in the service unit so `node`, `bash`, and tools resolve.
+- Prefer absolute shell paths in scripts (e.g., `/run/current-system/sw/bin/bash`).
+
+Example service snippet:
+
+```ini
+[Service]
+Type=oneshot
+WorkingDirectory=/home/art/niemand/skills/lobster
+Environment="PATH=/run/wrappers/bin:/run/current-system/sw/bin:/home/art/.nix-profile/bin:/home/art/.npm-packages/bin:/home/art/.local/bin:/home/art/.bun/bin:/home/art/go/bin:/usr/bin:/bin"
+ExecStart=/run/current-system/sw/bin/env node ./bin/lobster.js run --file /home/art/projects/lobster-workflows/workflows/my-workflow.lobster
+```
+
 ## Workflow File Format
 
 ```yaml
