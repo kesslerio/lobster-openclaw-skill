@@ -120,6 +120,45 @@ lobster-jobs new my-workflow --template with-approval
 lobster-jobs validate ~/.lobster/workflows/my-workflow.lobster
 ```
 
+## Running Workflows
+
+### Basic Execution
+```bash
+# Run a workflow
+lobster run --file ~/.lobster/workflows/my-workflow.lobster
+
+# Run in tool mode (JSON output, for automation)
+lobster run --file ~/.lobster/workflows/my-workflow.lobster --mode tool
+```
+
+### Approval Gates & Resume
+
+When a workflow hits an approval gate, it halts and outputs a `resumeToken`.
+
+**Step 1: Run workflow (halts at approval, outputs token)**
+```bash
+lobster run --file /path/to/workflow.lobster --mode tool
+# Output includes: "resumeToken": "eyJ..."
+```
+
+**Step 2: Resume after approval**
+```bash
+# Approve and continue
+lobster resume --token <resumeToken> --approve yes
+
+# Reject and cancel
+lobster resume --token <resumeToken> --approve no
+```
+
+**⚠️ Common Mistake:** `lobster run --resume` does NOT exist. The `--resume` flag is silently ignored. Always use the separate `lobster resume` command.
+
+### State Files
+
+Workflow state is saved to `~/.lobster/state/workflow_resume_<uuid>.json` when halted at an approval gate. These can be inspected for debugging:
+```bash
+cat ~/.lobster/state/workflow_resume_*.json | jq .
+```
+
 ## Systemd Timer Notes
 
 When Lobster workflows are triggered by systemd user timers, do not rely on interactive shell PATH.
