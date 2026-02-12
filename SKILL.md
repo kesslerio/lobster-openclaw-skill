@@ -1,6 +1,6 @@
 ---
 name: lobster-jobs
-description: Transform OpenClaw cron jobs into Lobster workflows. Analyze, inspect, and validate job migrations. Use when converting automations to deterministic, approval-gated workflows with resume capabilities.
+description: Create, run, and manage Lobster workflows. Transform OpenClaw cron jobs into deterministic, approval-gated workflows with resume capabilities. Use when: 'convert cron to lobster', 'create lobster workflow', 'run lobster workflow', 'check lobster status', 'migrate automation to lobster'. NOT for managing OpenClaw cron jobs directly (use cron tool).
 metadata:
   openclaw:
     emoji: 🦞
