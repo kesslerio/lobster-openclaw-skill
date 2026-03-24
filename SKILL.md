@@ -12,6 +12,15 @@ metadata:
 
 Transform OpenClaw cron jobs into Lobster workflows with approval gates and resumable execution.
 
+## Lobster Workflow Notes
+
+- Use a workflow file when the job needs typed handoff, approval gates, or resumability.
+- For deterministic one-command jobs, keep the wrapper as small as possible and do not bury the command inside an extra model-mediated layer.
+- For Telegram delivery in workflows, use Lobster's native `message` step (`command: message`) and validate `channel + recipient` before sending.
+- Source `scripts/lib/delivery-preflight.sh` before any send step that targets a recipient.
+- Keep fallback text explicit and validate with a real chat delivery test before declaring success.
+- Use `pipeline: llm.invoke` for model-backed steps; `llm_task.invoke` is compatibility-only.
+
 ## Purpose
 
 OpenClaw cron jobs are either:
@@ -186,17 +195,21 @@ description: Optional description
 steps:
   - id: fetch_data
     command: some-cli fetch --json
-    
+
   - id: process
     command: some-cli process
     stdin: $fetch_data.stdout
-    
+
   - id: approve_send
     command: approve --prompt "Send notification?"
     approval: required
-    
+
   - id: send
-    command: message.send --channel telegram --text "Done!"
+    command: message
+    action: send
+    channel: telegram
+    to: "-1001234567890"
+    message: $process.stdout
     condition: $approve_send.approved
 ```
 
@@ -227,13 +240,17 @@ For jobs needing both deterministic steps and LLM reasoning:
 steps:
   - id: gather
     command: gh issue list --json title,body
-    
+
   - id: triage
-    command: clawd.invoke
-    prompt: "Classify these issues by urgency"
-    
+    pipeline: llm.invoke --provider openclaw --prompt "Classify these issues by urgency"
+    stdin: $gather.stdout
+
   - id: notify
-    command: telegram-send
+    command: message
+    action: send
+    channel: telegram
+    to: "-1001234567890"
+    message: $triage.stdout
 ```
 
 The workflow is deterministic; the LLM is a black-box step.

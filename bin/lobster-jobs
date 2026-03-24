@@ -340,7 +340,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     elif job.status == MigrationStatus.PARTIAL:
         print(f"  {emoji('status_partial')} Can be partially migrated")
         print("  └─ Extract deterministic steps to Lobster, keep LLM steps in wrapper")
-        print("  └─ Consider using 'clawd.invoke' for LLM judgment within workflow")
+        print("  └─ Consider using 'llm.invoke' for LLM judgment within workflow")
     else:
         print(f"  {emoji('status_none')} Not recommended for migration")
         print("  └─ Keep as agentTurn - heavy LLM reasoning required")
